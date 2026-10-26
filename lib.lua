@@ -2,7 +2,7 @@ local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
-local DarkLib = {}
+local Library = {}
 DarkLib.Version = "1.0.0"
 
 DarkLib.Theme = {
@@ -37,6 +37,7 @@ local TOPBAR_HEIGHT = 46
 local SIDEBAR_WIDTH = 170
 local USER_CARD_HEIGHT = 54
 local BUBBLE_SIZE = 54
+local SLIDER_KNOB = 14
 local CORNER_RADIUS = 12
 local ROUND = UDim.new(1, 0)
 
@@ -120,6 +121,45 @@ end
 local function isPress(input)
 	return input.UserInputType == Enum.UserInputType.MouseButton1
 		or input.UserInputType == Enum.UserInputType.Touch
+end
+
+-- Tracks a press that starts on `handle`: onStart(input), then onMove(input) while
+-- it's held and moving, then onEnd(). Returns the global InputChanged connection.
+local function onDrag(handle, onStart, onMove, onEnd)
+	local dragging = false
+	local touch = nil
+
+	handle.InputBegan:Connect(function(input)
+		if not isPress(input) then
+			return
+		end
+		dragging = true
+		touch = input.UserInputType == Enum.UserInputType.Touch and input or nil
+		onStart(input)
+
+		local connection
+		connection = input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				connection:Disconnect()
+				dragging = false
+				onEnd()
+			end
+		end)
+	end)
+
+	return UserInputService.InputChanged:Connect(function(input)
+		if not dragging then
+			return
+		end
+		if touch then
+			if input ~= touch then
+				return
+			end
+		elseif input.UserInputType ~= Enum.UserInputType.MouseMovement then
+			return
+		end
+		onMove(input)
+	end)
 end
 
 -- Icons can be an image id (123, "123", "rbxassetid://123") or a short text
@@ -610,43 +650,13 @@ end
 
 -- Drags the whole window by `handle`. A press that never moves counts as a click.
 function Window:_makeDraggable(handle, onClick)
-	local dragging = false
-	local moved = false
-	local touch, startInput, startPosition
+	local moved, startInput, startPosition
 
-	handle.InputBegan:Connect(function(input)
-		if not isPress(input) then
-			return
-		end
-		dragging, moved = true, false
-		touch = input.UserInputType == Enum.UserInputType.Touch and input or nil
+	table.insert(self._connections, onDrag(handle, function(input)
+		moved = false
 		startInput = input.Position
 		startPosition = self._main.Position
-
-		local connection
-		connection = input.Changed:Connect(function()
-			if input.UserInputState == Enum.UserInputState.End then
-				connection:Disconnect()
-				dragging = false
-				if not moved and onClick then
-					onClick()
-				end
-			end
-		end)
-	end)
-
-	table.insert(self._connections, UserInputService.InputChanged:Connect(function(input)
-		if not dragging then
-			return
-		end
-		if touch then
-			if input ~= touch then
-				return
-			end
-		elseif input.UserInputType ~= Enum.UserInputType.MouseMovement then
-			return
-		end
-
+	end, function(input)
 		local delta = input.Position - startInput
 		if not moved and delta.Magnitude < 4 then
 			return
@@ -660,6 +670,10 @@ function Window:_makeDraggable(handle, onClick)
 				startPosition.Y.Offset + delta.Y
 			),
 		}, Enum.EasingStyle.Quad)
+	end, function()
+		if not moved and onClick then
+			onClick()
+		end
 	end))
 end
 
@@ -987,14 +1001,17 @@ function Tab:CreateSection(name)
 end
 
 -- Shared row used by every element: divider, hover highlight, title, description.
-function Section:_row(config, defaultName)
+-- `extraHeight` adds room under the text (the slider bar goes there).
+function Section:_row(config, defaultName, extraHeight)
 	local theme = self.Window.Theme
 	self._count = self._count + 1
+	extraHeight = extraHeight or 0
 	local hasDescription = type(config.Description) == "string" and config.Description ~= ""
+	local stacked = hasDescription or extraHeight > 0
 
 	local row = create("TextButton", {
 		Name = config.Name or defaultName,
-		Size = UDim2.new(1, 0, 0, hasDescription and 52 or 40),
+		Size = UDim2.new(1, 0, 0, (hasDescription and 52 or 40) + extraHeight),
 		BackgroundTransparency = 1,
 		AutoButtonColor = false,
 		Text = "",
@@ -1026,8 +1043,8 @@ function Section:_row(config, defaultName)
 
 	local title = create("TextLabel", {
 		Name = "Title",
-		Position = UDim2.fromOffset(16, hasDescription and 10 or 0),
-		Size = hasDescription and UDim2.new(1, -90, 0, 16) or UDim2.new(1, -90, 1, 0),
+		Position = UDim2.fromOffset(16, stacked and 10 or 0),
+		Size = stacked and UDim2.new(1, -90, 0, 16) or UDim2.new(1, -90, 1, 0),
 		BackgroundTransparency = 1,
 		Font = FONT_MEDIUM,
 		TextSize = 13,
@@ -1192,10 +1209,145 @@ function Section:CreateToggle(config)
 	return toggle
 end
 
+function Section:CreateSlider(config)
+	config = config or {}
+	local theme = self.Window.Theme
+	local page = self.Tab._page
+	local callback = config.Callback or function() end
+	local min = config.Min or 0
+	local max = config.Max or 100
+	local increment = config.Increment or 1
+	local suffix = config.Suffix or ""
+	local range = math.max(max - min, 1e-9)
+	local decimals = #(tostring(increment):match("%.(%d+)$") or "")
+	local row = self:_row(config, "Slider", 18)
+
+	local function format(value)
+		return string.format("%." .. decimals .. "f", value)
+	end
+
+	-- rounds to the nearest step and strips float noise like 0.30000000000000004
+	local function snap(value)
+		value = math.clamp(value, min, max)
+		value = min + math.floor((value - min) / increment + 0.5) * increment
+		return tonumber(format(math.clamp(value, min, max)))
+	end
+
+	local valueBox = create("TextBox", {
+		Name = "Value",
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -10, 0, 9),
+		Size = UDim2.fromOffset(64, 18),
+		BackgroundColor3 = theme.Hover,
+		BackgroundTransparency = 1,
+		ClearTextOnFocus = false,
+		Font = FONT_MEDIUM,
+		TextSize = 12,
+		Text = "",
+		TextColor3 = theme.SubText,
+		TextXAlignment = Enum.TextXAlignment.Right,
+		Parent = row,
+	}, { corner(5), padding(0, 6, 0, 6) })
+
+	-- taller than the visible track so it's easy to grab
+	local hitArea = create("Frame", {
+		Name = "Bar",
+		AnchorPoint = Vector2.new(0, 1),
+		Position = UDim2.new(0, 16, 1, -8),
+		Size = UDim2.new(1, -32, 0, 18),
+		BackgroundTransparency = 1,
+		Parent = row,
+	})
+
+	local track = create("Frame", {
+		Name = "Track",
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.fromScale(0, 0.5),
+		Size = UDim2.new(1, 0, 0, 4),
+		BackgroundColor3 = theme.ToggleOff,
+		Parent = hitArea,
+	}, { corner(ROUND) })
+
+	local fill = create("Frame", {
+		Name = "Fill",
+		Size = UDim2.fromScale(0, 1),
+		BackgroundColor3 = theme.Accent,
+		Parent = track,
+	}, { corner(ROUND) })
+
+	local knob = create("Frame", {
+		Name = "Knob",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0, SLIDER_KNOB / 2, 0.5, 0),
+		Size = UDim2.fromOffset(SLIDER_KNOB, SLIDER_KNOB),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Parent = track,
+	}, { corner(ROUND), stroke(Color3.new(0, 0, 0), 0.75) })
+
+	local slider = { Value = min, Instance = row }
+
+	-- The knob stays inside the track: at 0% its left edge sits on the start,
+	-- at 100% its right edge sits on the end.
+	local function render(duration)
+		local ratio = (slider.Value - min) / range
+		local offset = SLIDER_KNOB * (0.5 - ratio)
+		tween(fill, duration, { Size = UDim2.new(ratio, offset, 1, 0) })
+		tween(knob, duration, { Position = UDim2.new(ratio, offset, 0.5, 0) })
+		if not valueBox:IsFocused() then
+			valueBox.Text = format(slider.Value) .. suffix
+		end
+	end
+
+	function slider:Set(value, silent)
+		value = snap(tonumber(value) or slider.Value)
+		local changed = value ~= slider.Value
+		slider.Value = value
+		render(0.18)
+		if changed and not silent then
+			task.spawn(callback, value)
+		end
+	end
+
+	function slider:Get()
+		return slider.Value
+	end
+
+	local function slideTo(input)
+		local width = math.max(track.AbsoluteSize.X - SLIDER_KNOB, 1)
+		local ratio = math.clamp((input.Position.X - track.AbsolutePosition.X - SLIDER_KNOB / 2) / width, 0, 1)
+		slider:Set(min + ratio * range)
+	end
+
+	table.insert(self.Window._connections, onDrag(hitArea, function(input)
+		page.ScrollingEnabled = false -- keeps the page still while sliding on touch
+		tween(knob, 0.2, { Size = UDim2.fromOffset(SLIDER_KNOB + 4, SLIDER_KNOB + 4) })
+		slideTo(input)
+	end, slideTo, function()
+		page.ScrollingEnabled = true
+		tween(knob, 0.25, { Size = UDim2.fromOffset(SLIDER_KNOB, SLIDER_KNOB) })
+	end))
+
+	valueBox.Focused:Connect(function()
+		tween(valueBox, 0.2, { BackgroundTransparency = theme.SelectedTransparency, TextColor3 = theme.Text })
+	end)
+	valueBox.FocusLost:Connect(function()
+		tween(valueBox, 0.2, { BackgroundTransparency = 1, TextColor3 = theme.SubText })
+		-- "75" and "75%" both work; anything else just puts the old value back
+		local typed = tonumber((valueBox.Text:gsub("[^%d%.%-]", "")))
+		slider:Set(typed or slider.Value)
+	end)
+
+	slider.Value = snap(config.Default or min)
+	render(0)
+
+	return slider
+end
+
 -- Aliases for people used to other hub libraries.
 Window.AddTab = Window.CreateTab
 Tab.AddSection = Tab.CreateSection
 Section.AddButton = Section.CreateButton
 Section.AddToggle = Section.CreateToggle
+Section.AddSlider = Section.CreateSlider
 
-return DarkLib
+return Library
