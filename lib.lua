@@ -3,9 +3,9 @@ local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
 local Library = {}
-DarkLib.Version = "1.0.0"
+Library.Version = "1.0.0"
 
-DarkLib.Theme = {
+Library.Theme = {
 	Background = Color3.fromRGB(14, 14, 17),
 	BackgroundTransparency = 0.1,
 	Sidebar = Color3.fromRGB(0, 0, 0),
@@ -221,14 +221,14 @@ end
 -- Window
 --------------------------------------------------------------------------------
 
-function DarkLib:CreateWindow(config)
+function Library:CreateWindow(config)
 	config = config or {}
 
 	local player = Players.LocalPlayer
-	assert(player, "DarkLib has to be required from a LocalScript")
+	assert(player, "Library has to be required from a LocalScript")
 	local playerGui = player:WaitForChild("PlayerGui")
 
-	local theme = table.clone(DarkLib.Theme)
+	local theme = table.clone(Library.Theme)
 	for key, value in pairs(config.Theme or {}) do
 		theme[key] = value
 	end
@@ -240,7 +240,7 @@ function DarkLib:CreateWindow(config)
 	end
 
 	local window = setmetatable({
-		Title = config.Title or "DarkLib",
+		Title = config.Title or "Library",
 		Subtitle = config.Subtitle or "",
 		Theme = theme,
 		Tabs = {},
@@ -255,7 +255,7 @@ function DarkLib:CreateWindow(config)
 	}, Window)
 
 	-- Re-running the script (e.g. from StarterGui) replaces the old window.
-	local guiName = "DarkLib_" .. window.Title
+	local guiName = "Library_" .. window.Title
 	local existing = playerGui:FindFirstChild(guiName)
 	if existing then
 		existing:Destroy()
